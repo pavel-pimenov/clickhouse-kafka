@@ -206,6 +206,16 @@ int main() {
                  "Produced", totalRec, dataMB, results);
         }
 
+        // Phase 5b: async+parallel+compression+lz4
+        {
+        KafkaWriterConfig ocfg = kCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "lz4";
+        runPhase("PHASE 5b: Kafka 3p async+parallel+lz4",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
         // Verify Kafka batch
         verifyBroker(chWriter, data, "Kafka 3p", "_k_3p");
 
@@ -242,6 +252,16 @@ int main() {
         ocfg.asyncFlush = true;
         ocfg.compression = "zstd";
         runPhase("PHASE 9: Redpanda 3p async+parallel+zstd",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 9b: async+parallel+lz4
+        {
+        KafkaWriterConfig ocfg = rpCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "lz4";
+        runPhase("PHASE 9b: Redpanda 3p async+parallel+lz4",
                  [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
                  "Produced", totalRec, dataMB, results);
         }
