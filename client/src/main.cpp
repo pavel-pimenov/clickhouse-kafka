@@ -70,27 +70,53 @@ static void runPhase(const std::string& phaseLabel,
     });
 }
 
-static void producePhase(KafkaWriter& writer, const TestData& data,
-                         size_t batchSize, const std::string& topicSuffix,
-                         const std::string& phaseLabel, uint64_t totalRec,
-                         double dataMB, std::vector<BenchmarkResult>& results)
+// Sequential produce with optional async flush
+static void produceSeq(KafkaWriter& w, const TestData& data, size_t batchSize,
+                       const std::string& suffix, bool asyncFlush)
 {
-    runPhase(phaseLabel,
-             [&]() {
-                 writer.produceFloat(data.floats, batchSize, "signals-float" + topicSuffix);
-                 writer.produceDouble(data.doubles, batchSize, "signals-double" + topicSuffix);
-                 writer.produceInt(data.ints, batchSize, "signals-int" + topicSuffix);
-             },
-             "Produced", totalRec, dataMB, results);
+    w.produceFloat(data.floats, batchSize, "signals-float" + suffix);
+    w.produceDouble(data.doubles, batchSize, "signals-double" + suffix);
+    w.produceInt(data.ints, batchSize, "signals-int" + suffix);
+    if (asyncFlush) w.flush();
+}
+
+// Parallel produce: one KafkaWriter per type, 3 concurrent threads
+static void produceParallel(const KafkaWriterConfig& baseCfg,
+                            const TestData& data, size_t batchSize,
+                            const std::string& suffix, bool asyncFlush)
+{
+    KafkaWriterConfig cfg = baseCfg;
+    cfg.asyncFlush = asyncFlush;
+
+    auto runFloat = [&]() {
+        KafkaWriter w(cfg);
+        w.produceFloat(data.floats, batchSize, "signals-float" + suffix);
+        if (asyncFlush) w.flush();
+    };
+    auto runDouble = [&]() {
+        KafkaWriter w(cfg);
+        w.produceDouble(data.doubles, batchSize, "signals-double" + suffix);
+        if (asyncFlush) w.flush();
+    };
+    auto runInt = [&]() {
+        KafkaWriter w(cfg);
+        w.produceInt(data.ints, batchSize, "signals-int" + suffix);
+        if (asyncFlush) w.flush();
+    };
+    std::thread t1(runFloat), t2(runDouble), t3(runInt);
+    t1.join(); t2.join(); t3.join();
 }
 
 static void verifyBroker(ClickHouseWriter& ch, const TestData& data,
                          const std::string& brokerLabel, const std::string& sinkSuffix)
 {
     std::cout << "=== Verifying " << brokerLabel << " -> ClickHouse consumption ===\n";
-    auto vf = verifyConsumption(ch, "signals_float_sink" + sinkSuffix, brokerLabel + "/float", data.floats.size());
-    auto vd = verifyConsumption(ch, "signals_double_sink" + sinkSuffix, brokerLabel + "/double", data.doubles.size());
-    auto vi = verifyConsumption(ch, "signals_int_sink" + sinkSuffix, brokerLabel + "/int", data.ints.size());
+    auto vf = verifyConsumption(ch, "signals_float_sink" + sinkSuffix,
+                                brokerLabel + "/float", data.floats.size());
+    auto vd = verifyConsumption(ch, "signals_double_sink" + sinkSuffix,
+                                brokerLabel + "/double", data.doubles.size());
+    auto vi = verifyConsumption(ch, "signals_int_sink" + sinkSuffix,
+                                brokerLabel + "/int", data.ints.size());
     std::cout << "  Total consumed from " << brokerLabel << ": " << (vf + vd + vi) << "\n\n";
 }
 
@@ -101,7 +127,7 @@ int main() {
         auto kafkaBroker = getEnv("KAFKA_BROKER", "localhost:9092");
         auto redpandaBroker = getEnv("REDPANDA_BROKER", "localhost:9093");
         auto numRecords = std::stoull(getEnv("NUM_RECORDS", "300000"));
-        auto batchSize = std::stoull(getEnv("BATCH_SIZE", "1000"));
+        auto batchSize = std::stoull(getEnv("BATCH_SIZE", "10000"));
 
         std::cout << "Configuration:\n"
                   << "  Total records: " << numRecords
@@ -114,15 +140,15 @@ int main() {
         ClickHouseWriter chWriter(chHost, chPort);
         waitForServices(chWriter, 30);
 
-        // Truncate all tables from previous runs
+        // Truncate all tables
         auto trunc = [&](const std::string& t) { chWriter.truncate(t); };
         trunc("signals_float"); trunc("signals_double"); trunc("signals_int");
-        trunc("signals_float_sink_k"); trunc("signals_double_sink_k"); trunc("signals_int_sink_k");
-        trunc("signals_float_sink_k_3p"); trunc("signals_double_sink_k_3p"); trunc("signals_int_sink_k_3p");
-        trunc("signals_float_sink_k_5p"); trunc("signals_double_sink_k_5p"); trunc("signals_int_sink_k_5p");
-        trunc("signals_float_sink_rp"); trunc("signals_double_sink_rp"); trunc("signals_int_sink_rp");
-        trunc("signals_float_sink_rp_3p"); trunc("signals_double_sink_rp_3p"); trunc("signals_int_sink_rp_3p");
-        trunc("signals_float_sink_rp_5p"); trunc("signals_double_sink_rp_5p"); trunc("signals_int_sink_rp_5p");
+        trunc("signals_float_sink_k_3p");
+        trunc("signals_double_sink_k_3p");
+        trunc("signals_int_sink_k_3p");
+        trunc("signals_float_sink_rp_3p");
+        trunc("signals_double_sink_rp_3p");
+        trunc("signals_int_sink_rp_3p");
         std::cout << "Tables truncated\n";
 
         std::cout << "Generating " << numRecords << " test records...\n";
@@ -136,49 +162,92 @@ int main() {
                   << dataMB << " MB\n\n";
 
         std::vector<BenchmarkResult> results;
+        const std::string suffix = "-3p";
 
         // --- Phase 1: ClickHouse native ---
         runPhase("PHASE 1: ClickHouse Native Direct Write",
                  [&]() { chWriter.insert(data, batchSize); },
                  "Inserted", totalRec, dataMB, results);
 
-        // --- Kafka Phases ---
-        {
-        KafkaWriter kw(kafkaBroker);
-        producePhase(kw, data, batchSize, "",        "PHASE 2: Kafka 1p",  totalRec, dataMB, results);
-        }
-        verifyBroker(chWriter, data, "Kafka 1p", "_k");
+        // === Kafka 3p variants ===
+        KafkaWriterConfig kCfg;
+        kCfg.brokers = kafkaBroker;
 
+        // Phase 2: sync + sequential (baseline)
         {
-        KafkaWriter kw(kafkaBroker);
-        producePhase(kw, data, batchSize, "-3p",     "PHASE 3: Kafka 3p",  totalRec, dataMB, results);
+        KafkaWriter w(kCfg);
+        runPhase("PHASE 2: Kafka 3p sync+seq",
+                 [&]() { produceSeq(w, data, batchSize, suffix, false); },
+                 "Produced", totalRec, dataMB, results);
         }
+
+        // Phase 3: async (no flush per batch)
+        {
+        KafkaWriterConfig acfg = kCfg;
+        acfg.asyncFlush = true;
+        KafkaWriter w(acfg);
+        runPhase("PHASE 3: Kafka 3p async",
+                 [&]() { produceSeq(w, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 4: parallel (3 producers, sync)
+        runPhase("PHASE 4: Kafka 3p parallel",
+                 [&]() { produceParallel(kCfg, data, batchSize, suffix, false); },
+                 "Produced", totalRec, dataMB, results);
+
+        // Phase 5: async+parallel+compression+zstd
+        {
+        KafkaWriterConfig ocfg = kCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "zstd";
+        runPhase("PHASE 5: Kafka 3p async+parallel+zstd",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Verify Kafka batch
         verifyBroker(chWriter, data, "Kafka 3p", "_k_3p");
 
-        {
-        KafkaWriter kw(kafkaBroker);
-        producePhase(kw, data, batchSize, "-5p",     "PHASE 4: Kafka 5p",  totalRec, dataMB, results);
-        }
-        verifyBroker(chWriter, data, "Kafka 5p", "_k_5p");
+        // === Redpanda 3p variants ===
+        KafkaWriterConfig rpCfg;
+        rpCfg.brokers = redpandaBroker;
 
-        // --- Redpanda Phases ---
+        // Phase 6: sync+seq
         {
-        KafkaWriter rw(redpandaBroker);
-        producePhase(rw, data, batchSize, "",        "PHASE 5: Redpanda 1p", totalRec, dataMB, results);
+        KafkaWriter w(rpCfg);
+        runPhase("PHASE 6: Redpanda 3p sync+seq",
+                 [&]() { produceSeq(w, data, batchSize, suffix, false); },
+                 "Produced", totalRec, dataMB, results);
         }
-        verifyBroker(chWriter, data, "Redpanda 1p", "_rp");
 
+        // Phase 7: async
         {
-        KafkaWriter rw(redpandaBroker);
-        producePhase(rw, data, batchSize, "-3p",     "PHASE 6: Redpanda 3p", totalRec, dataMB, results);
+        KafkaWriterConfig acfg = rpCfg;
+        acfg.asyncFlush = true;
+        KafkaWriter w(acfg);
+        runPhase("PHASE 7: Redpanda 3p async",
+                 [&]() { produceSeq(w, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
         }
+
+        // Phase 8: parallel
+        runPhase("PHASE 8: Redpanda 3p parallel",
+                 [&]() { produceParallel(rpCfg, data, batchSize, suffix, false); },
+                 "Produced", totalRec, dataMB, results);
+
+        // Phase 9: async+parallel+zstd
+        {
+        KafkaWriterConfig ocfg = rpCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "zstd";
+        runPhase("PHASE 9: Redpanda 3p async+parallel+zstd",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Verify Redpanda batch
         verifyBroker(chWriter, data, "Redpanda 3p", "_rp_3p");
-
-        {
-        KafkaWriter rw(redpandaBroker);
-        producePhase(rw, data, batchSize, "-5p",     "PHASE 7: Redpanda 5p", totalRec, dataMB, results);
-        }
-        verifyBroker(chWriter, data, "Redpanda 5p", "_rp_5p");
 
         // --- Print comparison ---
         printResults(results);
@@ -191,24 +260,12 @@ int main() {
         printCount("signals_float");
         printCount("signals_double");
         printCount("signals_int");
-        printCount("signals_float_sink_k");
-        printCount("signals_double_sink_k");
-        printCount("signals_int_sink_k");
         printCount("signals_float_sink_k_3p");
         printCount("signals_double_sink_k_3p");
         printCount("signals_int_sink_k_3p");
-        printCount("signals_float_sink_k_5p");
-        printCount("signals_double_sink_k_5p");
-        printCount("signals_int_sink_k_5p");
-        printCount("signals_float_sink_rp");
-        printCount("signals_double_sink_rp");
-        printCount("signals_int_sink_rp");
         printCount("signals_float_sink_rp_3p");
         printCount("signals_double_sink_rp_3p");
         printCount("signals_int_sink_rp_3p");
-        printCount("signals_float_sink_rp_5p");
-        printCount("signals_double_sink_rp_5p");
-        printCount("signals_int_sink_rp_5p");
 
     } catch (const std::exception& e) {
         std::cerr << "FATAL: " << e.what() << "\n";

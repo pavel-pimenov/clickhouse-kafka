@@ -1,5 +1,40 @@
 # ClickHouse Native vs Kafka Produce — Benchmark Results
 
+## V4: Optimization Comparison (async / parallel / zstd — Kafka 3p vs Redpanda 3p)
+
+### Changes Since V3
+- **Async mode**: removed per-batch `flush()`, call once at end — librdkafka pipelines batches
+- **Parallel mode**: 3 independent producers in 3 threads (one per signal type)
+- **RK_MSG_FREE**: librdkafka takes ownership of buffers, saves a copy
+- **zstd compression**: `compression.codec=zstd` in librdkafka config
+
+### Results
+
+| Metric | CH Native | Kafka sync+seq | Kafka async | Kafka parallel | Kafka async+par+zstd | Redpanda sync+seq | Redpanda async | Redpanda parallel | Redpanda async+par+zstd |
+|---|---|---|---|---|---|---|---|---|---|
+| **rec/s** | 145 353 | 71 067 | **242 521** | 141 495 | 181 826 | 70 803 | **343 727** | 131 446 | **407 871** |
+| **время (с)** | 0.69 | 1.41 | **0.41** | 0.71 | 0.55 | 1.41 | **0.29** | 0.76 | **0.25** |
+| RSS (KB) | 14 996 | 19 900 | 20 940 | 22 428 | 33 236 | 33 264 | 33 720 | 34 152 | 41 184 |
+
+### Ускорение относительно sync+seq baseline
+
+| Оптимизация | Kafka 3p | Ускорение | Redpanda 3p | Ускорение |
+|---|---|---|---|---|
+| sync+seq (baseline) | 71 067 rec/s | 1.0× | 70 803 rec/s | 1.0× |
+| async only | 242 521 | **+3.4×** | 343 727 | **+4.9×** |
+| parallel only | 141 495 | **+2.0×** | 131 446 | **+1.9×** |
+| async+parallel+zstd | 181 826 | **+2.6×** | **407 871** | **+5.8×** |
+
+### Key Takeaways
+
+1. **Async — главный выигрыш**. Убрать `flush()` из цикла — это +240–380%. librdkafka сам конвейерит produce + poll.
+2. **Parallel (3 потока) — +90–100%**. Каждый поток со своим продюсером. Ограничен CPU (2 ядра).
+3. **zstd compression** — для Kafka async+parallel+zstd медленнее async (182K vs 242K). Для Redpanda — наоборот быстрее (408K vs 344K). Возможно, zstd даёт меньше данных на wire = быстрее отправка на Redpanda, но на Kafka узкое место не в сети.
+4. **Redpanda async+parallel+zstd: 408K rec/s — быстрее CH Native (145K)**. Впервые брокерский путь обогнал прямую вставку в ClickHouse. Хотя сравнение не совсем честное — produce в Kafka vs insert в CH с индексацией.
+5. **RSS растёт** с параллельными продюсерами (20K → 33–41K), что ожидаемо.
+
+---
+
 ## V3: Partition Count Comparison (1p / 3p / 5p — Kafka vs Redpanda)
 
 ### Test Environment

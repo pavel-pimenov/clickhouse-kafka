@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <iomanip>
+#include <cstring>
 
 static std::string floatToJson(const FloatRecord& r) {
     std::ostringstream os;
@@ -31,7 +32,8 @@ static std::string intToJson(const IntRecord& r) {
 
 class KafkaWriter::Impl {
 public:
-    Impl(const std::string& brokers)
+    Impl(const KafkaWriterConfig& config)
+        : asyncFlush_(config.asyncFlush)
     {
         std::string errstr;
 
@@ -41,17 +43,18 @@ public:
 
         auto conf_cleanup = [](RdKafka::Conf* c) { delete c; };
 
-        if (conf->set("bootstrap.servers", brokers, errstr) != RdKafka::Conf::CONF_OK) {
+        if (conf->set("bootstrap.servers", config.brokers, errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        }
-        if (conf->set("message.timeout.ms", "30000", errstr) != RdKafka::Conf::CONF_OK) {
+        if (conf->set("message.timeout.ms", "30000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        }
-        if (conf->set("queue.buffering.max.messages", "100000", errstr) != RdKafka::Conf::CONF_OK) {
+        if (conf->set("queue.buffering.max.messages", "100000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        }
-        if (conf->set("batch.num.messages", "10000", errstr) != RdKafka::Conf::CONF_OK) {
+        if (conf->set("batch.num.messages", "10000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
+
+        if (!config.compression.empty()) {
+            if (conf->set("compression.codec", config.compression, errstr) != RdKafka::Conf::CONF_OK)
+                throw std::runtime_error("kafka conf error: " + errstr);
         }
 
         producer_.reset(RdKafka::Producer::create(conf, errstr));
@@ -75,48 +78,68 @@ public:
         while (i < records.size()) {
             size_t end = std::min(i + batchSize, records.size());
 
-            std::string batch;
+            std::ostringstream os;
             for (size_t j = i; j < end; ++j) {
-                if (j > i) batch += '\n';
-                batch += toJson(records[j]);
+                if (j > i) os << '\n';
+                os << toJson(records[j]);
             }
+            std::string batch = os.str();
+
+            char* buf = static_cast<char*>(std::malloc(batch.size()));
+            if (!buf) throw std::bad_alloc();
+            std::memcpy(buf, batch.data(), batch.size());
 
             RdKafka::ErrorCode err = producer_->produce(
                 topic,
                 RdKafka::Topic::PARTITION_UA,
-                RdKafka::Producer::RK_MSG_COPY,
-                const_cast<char*>(batch.data()),
-                batch.size(),
+                RdKafka::Producer::RK_MSG_FREE,
+                buf, batch.size(),
                 nullptr, 0,
                 0, nullptr, nullptr);
 
             if (err != RdKafka::ERR_NO_ERROR) {
+                std::free(buf);
                 producer_->poll(100);
+                char* buf2 = static_cast<char*>(std::malloc(batch.size()));
+                if (!buf2) throw std::bad_alloc();
+                std::memcpy(buf2, batch.data(), batch.size());
                 err = producer_->produce(
                     topic,
                     RdKafka::Topic::PARTITION_UA,
-                    RdKafka::Producer::RK_MSG_COPY,
-                    const_cast<char*>(batch.data()),
-                    batch.size(),
+                    RdKafka::Producer::RK_MSG_FREE,
+                    buf2, batch.size(),
                     nullptr, 0,
                     0, nullptr, nullptr);
                 if (err != RdKafka::ERR_NO_ERROR) {
+                    std::free(buf2);
                     throw std::runtime_error("kafka produce error: " +
                         RdKafka::err2str(err));
                 }
             }
 
-            producer_->flush(5000);
+            producer_->poll(0);
+
+            if (!asyncFlush_) {
+                producer_->flush(5000);
+            }
+
             i = end;
+        }
+    }
+
+    void flush() {
+        if (producer_) {
+            producer_->flush(10000);
         }
     }
 
 private:
     std::unique_ptr<RdKafka::Producer> producer_;
+    bool asyncFlush_;
 };
 
-KafkaWriter::KafkaWriter(const std::string& brokers)
-    : impl_(std::make_unique<Impl>(brokers)) {}
+KafkaWriter::KafkaWriter(const KafkaWriterConfig& config)
+    : impl_(std::make_unique<Impl>(config)) {}
 
 KafkaWriter::~KafkaWriter() = default;
 
@@ -130,4 +153,8 @@ void KafkaWriter::produceDouble(const std::vector<DoubleRecord>& records, size_t
 
 void KafkaWriter::produceInt(const std::vector<IntRecord>& records, size_t batchSize, const std::string& topic) {
     impl_->produce(records, batchSize, topic, intToJson);
+}
+
+void KafkaWriter::flush() {
+    impl_->flush();
 }
