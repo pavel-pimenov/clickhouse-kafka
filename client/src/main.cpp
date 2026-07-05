@@ -196,12 +196,21 @@ int main() {
                  [&]() { produceParallel(kCfg, data, batchSize, suffix, false); },
                  "Produced", totalRec, dataMB, results);
 
-        // Phase 5: async+parallel+compression+zstd
+        // Phase 5: async+parallel (no compression)
+        {
+        KafkaWriterConfig ocfg = kCfg;
+        ocfg.asyncFlush = true;
+        runPhase("PHASE 5: Kafka 3p async+parallel",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 5z: async+parallel+compression+zstd
         {
         KafkaWriterConfig ocfg = kCfg;
         ocfg.asyncFlush = true;
         ocfg.compression = "zstd";
-        runPhase("PHASE 5: Kafka 3p async+parallel+zstd",
+        runPhase("PHASE 5z: Kafka 3p async+parallel+zstd",
                  [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
                  "Produced", totalRec, dataMB, results);
         }
@@ -212,6 +221,26 @@ int main() {
         ocfg.asyncFlush = true;
         ocfg.compression = "lz4";
         runPhase("PHASE 5b: Kafka 3p async+parallel+lz4",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 5c: async+parallel+snappy
+        {
+        KafkaWriterConfig ocfg = kCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "snappy";
+        runPhase("PHASE 5c: Kafka 3p async+parallel+snappy",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 5d: async+parallel+gzip
+        {
+        KafkaWriterConfig ocfg = kCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "gzip";
+        runPhase("PHASE 5d: Kafka 3p async+parallel+gzip",
                  [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
                  "Produced", totalRec, dataMB, results);
         }
@@ -246,12 +275,21 @@ int main() {
                  [&]() { produceParallel(rpCfg, data, batchSize, suffix, false); },
                  "Produced", totalRec, dataMB, results);
 
-        // Phase 9: async+parallel+zstd
+        // Phase 9: async+parallel (no compression)
+        {
+        KafkaWriterConfig ocfg = rpCfg;
+        ocfg.asyncFlush = true;
+        runPhase("PHASE 9: Redpanda 3p async+parallel",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 9z: async+parallel+zstd
         {
         KafkaWriterConfig ocfg = rpCfg;
         ocfg.asyncFlush = true;
         ocfg.compression = "zstd";
-        runPhase("PHASE 9: Redpanda 3p async+parallel+zstd",
+        runPhase("PHASE 9z: Redpanda 3p async+parallel+zstd",
                  [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
                  "Produced", totalRec, dataMB, results);
         }
@@ -262,6 +300,26 @@ int main() {
         ocfg.asyncFlush = true;
         ocfg.compression = "lz4";
         runPhase("PHASE 9b: Redpanda 3p async+parallel+lz4",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 9c: async+parallel+snappy
+        {
+        KafkaWriterConfig ocfg = rpCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "snappy";
+        runPhase("PHASE 9c: Redpanda 3p async+parallel+snappy",
+                 [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
+                 "Produced", totalRec, dataMB, results);
+        }
+
+        // Phase 9d: async+parallel+gzip
+        {
+        KafkaWriterConfig ocfg = rpCfg;
+        ocfg.asyncFlush = true;
+        ocfg.compression = "gzip";
+        runPhase("PHASE 9d: Redpanda 3p async+parallel+gzip",
                  [&]() { produceParallel(ocfg, data, batchSize, suffix, true); },
                  "Produced", totalRec, dataMB, results);
         }
