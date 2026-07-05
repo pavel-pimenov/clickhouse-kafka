@@ -31,6 +31,11 @@ public:
         }
     }
 
+    void truncateTable(const std::string& table) {
+        clickhouse::Query q("TRUNCATE TABLE IF EXISTS benchmark." + table);
+        client_.Execute(q);
+    }
+
     uint64_t countTable(const std::string& table) {
         uint64_t count = 0;
         auto query = "SELECT count() FROM benchmark." + table;
@@ -115,6 +120,10 @@ void ClickHouseWriter::insert(const TestData& data, size_t batchSize) {
 
 bool ClickHouseWriter::ping() {
     return impl_->ping();
+}
+
+void ClickHouseWriter::truncate(const std::string& table) {
+    impl_->truncateTable(table);
 }
 
 uint64_t ClickHouseWriter::countTable(const std::string& table) {

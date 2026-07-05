@@ -70,6 +70,30 @@ static void runPhase(const std::string& phaseLabel,
     });
 }
 
+static void producePhase(KafkaWriter& writer, const TestData& data,
+                         size_t batchSize, const std::string& topicSuffix,
+                         const std::string& phaseLabel, uint64_t totalRec,
+                         double dataMB, std::vector<BenchmarkResult>& results)
+{
+    runPhase(phaseLabel,
+             [&]() {
+                 writer.produceFloat(data.floats, batchSize, "signals-float" + topicSuffix);
+                 writer.produceDouble(data.doubles, batchSize, "signals-double" + topicSuffix);
+                 writer.produceInt(data.ints, batchSize, "signals-int" + topicSuffix);
+             },
+             "Produced", totalRec, dataMB, results);
+}
+
+static void verifyBroker(ClickHouseWriter& ch, const TestData& data,
+                         const std::string& brokerLabel, const std::string& sinkSuffix)
+{
+    std::cout << "=== Verifying " << brokerLabel << " -> ClickHouse consumption ===\n";
+    auto vf = verifyConsumption(ch, "signals_float_sink" + sinkSuffix, brokerLabel + "/float", data.floats.size());
+    auto vd = verifyConsumption(ch, "signals_double_sink" + sinkSuffix, brokerLabel + "/double", data.doubles.size());
+    auto vi = verifyConsumption(ch, "signals_int_sink" + sinkSuffix, brokerLabel + "/int", data.ints.size());
+    std::cout << "  Total consumed from " << brokerLabel << ": " << (vf + vd + vi) << "\n\n";
+}
+
 int main() {
     try {
         auto chHost = getEnv("CLICKHOUSE_HOST", "localhost");
@@ -90,6 +114,17 @@ int main() {
         ClickHouseWriter chWriter(chHost, chPort);
         waitForServices(chWriter, 30);
 
+        // Truncate all tables from previous runs
+        auto trunc = [&](const std::string& t) { chWriter.truncate(t); };
+        trunc("signals_float"); trunc("signals_double"); trunc("signals_int");
+        trunc("signals_float_sink_k"); trunc("signals_double_sink_k"); trunc("signals_int_sink_k");
+        trunc("signals_float_sink_k_3p"); trunc("signals_double_sink_k_3p"); trunc("signals_int_sink_k_3p");
+        trunc("signals_float_sink_k_5p"); trunc("signals_double_sink_k_5p"); trunc("signals_int_sink_k_5p");
+        trunc("signals_float_sink_rp"); trunc("signals_double_sink_rp"); trunc("signals_int_sink_rp");
+        trunc("signals_float_sink_rp_3p"); trunc("signals_double_sink_rp_3p"); trunc("signals_int_sink_rp_3p");
+        trunc("signals_float_sink_rp_5p"); trunc("signals_double_sink_rp_5p"); trunc("signals_int_sink_rp_5p");
+        std::cout << "Tables truncated\n";
+
         std::cout << "Generating " << numRecords << " test records...\n";
         auto data = generateTestData(numRecords);
         auto dataMB = totalDataSizeMB(data);
@@ -107,39 +142,43 @@ int main() {
                  [&]() { chWriter.insert(data, batchSize); },
                  "Inserted", totalRec, dataMB, results);
 
-        // --- Phase 2: Kafka Produce ---
+        // --- Kafka Phases ---
         {
-        KafkaWriter kafkaWriter(kafkaBroker);
-        runPhase("PHASE 2: Kafka Produce",
-                 [&]() {
-                     kafkaWriter.produceFloat(data.floats, batchSize, "signals-float");
-                     kafkaWriter.produceDouble(data.doubles, batchSize, "signals-double");
-                     kafkaWriter.produceInt(data.ints, batchSize, "signals-int");
-                 },
-                 "Produced", totalRec, dataMB, results);
+        KafkaWriter kw(kafkaBroker);
+        producePhase(kw, data, batchSize, "",        "PHASE 2: Kafka 1p",  totalRec, dataMB, results);
         }
-        std::cout << "=== Verifying Kafka -> ClickHouse consumption ===\n";
-        uint64_t kFloat = verifyConsumption(chWriter, "signals_float_sink_k", "Kafka/float", data.floats.size());
-        uint64_t kDouble = verifyConsumption(chWriter, "signals_double_sink_k", "Kafka/double", data.doubles.size());
-        uint64_t kInt = verifyConsumption(chWriter, "signals_int_sink_k", "Kafka/int", data.ints.size());
-        std::cout << "  Total consumed from Kafka: " << (kFloat + kDouble + kInt) << "\n\n";
+        verifyBroker(chWriter, data, "Kafka 1p", "_k");
 
-        // --- Phase 3: Redpanda Produce ---
         {
-        KafkaWriter redpandaWriter(redpandaBroker);
-        runPhase("PHASE 3: Redpanda Produce",
-                 [&]() {
-                     redpandaWriter.produceFloat(data.floats, batchSize, "signals-float");
-                     redpandaWriter.produceDouble(data.doubles, batchSize, "signals-double");
-                     redpandaWriter.produceInt(data.ints, batchSize, "signals-int");
-                 },
-                 "Produced", totalRec, dataMB, results);
+        KafkaWriter kw(kafkaBroker);
+        producePhase(kw, data, batchSize, "-3p",     "PHASE 3: Kafka 3p",  totalRec, dataMB, results);
         }
-        std::cout << "=== Verifying Redpanda -> ClickHouse consumption ===\n";
-        uint64_t rFloat = verifyConsumption(chWriter, "signals_float_sink_rp", "Redpanda/float", data.floats.size());
-        uint64_t rDouble = verifyConsumption(chWriter, "signals_double_sink_rp", "Redpanda/double", data.doubles.size());
-        uint64_t rInt = verifyConsumption(chWriter, "signals_int_sink_rp", "Redpanda/int", data.ints.size());
-        std::cout << "  Total consumed from Redpanda: " << (rFloat + rDouble + rInt) << "\n\n";
+        verifyBroker(chWriter, data, "Kafka 3p", "_k_3p");
+
+        {
+        KafkaWriter kw(kafkaBroker);
+        producePhase(kw, data, batchSize, "-5p",     "PHASE 4: Kafka 5p",  totalRec, dataMB, results);
+        }
+        verifyBroker(chWriter, data, "Kafka 5p", "_k_5p");
+
+        // --- Redpanda Phases ---
+        {
+        KafkaWriter rw(redpandaBroker);
+        producePhase(rw, data, batchSize, "",        "PHASE 5: Redpanda 1p", totalRec, dataMB, results);
+        }
+        verifyBroker(chWriter, data, "Redpanda 1p", "_rp");
+
+        {
+        KafkaWriter rw(redpandaBroker);
+        producePhase(rw, data, batchSize, "-3p",     "PHASE 6: Redpanda 3p", totalRec, dataMB, results);
+        }
+        verifyBroker(chWriter, data, "Redpanda 3p", "_rp_3p");
+
+        {
+        KafkaWriter rw(redpandaBroker);
+        producePhase(rw, data, batchSize, "-5p",     "PHASE 7: Redpanda 5p", totalRec, dataMB, results);
+        }
+        verifyBroker(chWriter, data, "Redpanda 5p", "_rp_5p");
 
         // --- Print comparison ---
         printResults(results);
@@ -155,9 +194,21 @@ int main() {
         printCount("signals_float_sink_k");
         printCount("signals_double_sink_k");
         printCount("signals_int_sink_k");
+        printCount("signals_float_sink_k_3p");
+        printCount("signals_double_sink_k_3p");
+        printCount("signals_int_sink_k_3p");
+        printCount("signals_float_sink_k_5p");
+        printCount("signals_double_sink_k_5p");
+        printCount("signals_int_sink_k_5p");
         printCount("signals_float_sink_rp");
         printCount("signals_double_sink_rp");
         printCount("signals_int_sink_rp");
+        printCount("signals_float_sink_rp_3p");
+        printCount("signals_double_sink_rp_3p");
+        printCount("signals_int_sink_rp_3p");
+        printCount("signals_float_sink_rp_5p");
+        printCount("signals_double_sink_rp_5p");
+        printCount("signals_int_sink_rp_5p");
 
     } catch (const std::exception& e) {
         std::cerr << "FATAL: " << e.what() << "\n";

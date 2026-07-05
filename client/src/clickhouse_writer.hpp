@@ -12,6 +12,7 @@ public:
 
     void insert(const TestData& data, size_t batchSize);
     bool ping();
+    void truncate(const std::string& table);
     uint64_t countTable(const std::string& table);
 
 private:

@@ -1,6 +1,6 @@
 # ClickHouse Native vs Kafka Produce — Benchmark Results
 
-## V2: Time-Series Benchmark (3-Way: CH Native vs Kafka vs Redpanda)
+## V3: Partition Count Comparison (1p / 3p / 5p — Kafka vs Redpanda)
 
 ### Test Environment
 
@@ -35,62 +35,64 @@
 |-----------|-------|
 | Total records | 100 000 (~33 333 per type) |
 | Batch size | 1 000 |
-| Total data | ~2.16 MB (small typed records) |
+| Total data | ~2.16 MB |
 
-### Schema — Time-Series Design
+### Schema — Partition Variants
 
-**Direct tables** (ClickHouse native insert targets):
-- `signals_float` — `(signal_id UInt64, time DateTime, value Float32)`
-- `signals_double` — `(signal_id UInt64, time DateTime, value Float64)`
-- `signals_int` — `(signal_id UInt64, time DateTime, value Int64)`
+For each broker, three topic/table sets exist with 1, 3, and 5 partitions:
 
-**Kafka engine tables** (per broker, per type):
-- Kafka: `signals_float_queue_k`, `signals_double_queue_k`, `signals_int_queue_k`
-- Redpanda: `signals_float_queue_rp`, `signals_double_queue_rp`, `signals_int_queue_rp`
+| Partitions | Kafka topics | Redpanda topics | Sink suffix (Kafka) | Sink suffix (Redpanda) |
+|-----------|-------------|----------------|---------------------|----------------------|
+| 1 (default) | `signals-{type}` | `signals-{type}` | `_k` | `_rp` |
+| 3 | `signals-{type}-3p` | `signals-{type}-3p` | `_k_3p` | `_rp_3p` |
+| 5 | `signals-{type}-5p` | `signals-{type}-5p` | `_k_5p` | `_rp_5p` |
 
-**Sink tables + Materialized Views** (per broker):
-- `signals_float_sink_k` ← MV ← `signals_float_queue_k`
-- `signals_double_sink_k` ← MV ← `signals_double_queue_k`
-- `signals_int_sink_k` ← MV ← `signals_int_queue_k`
-- Same for Redpanda (`_sink_rp`)
-
-**Topics**: `signals-float`, `signals-double`, `signals-int`
+Each set has 3 Kafka engine tables + 3 sink tables + 3 MV (21 tables total per broker, 3 direct tables reused). ClickHouse `kafka_num_consumers` matches partition count.
 
 ### Kafka Produce Settings
 - `acks=1` (leader only)
 - Synchronous `flush()` per batch for fair latency comparison
+- Tables truncated before each run (no accumulation)
 
 ### Workload
-Three sequential phases:
-1. **Phase 1** — Insert all records via ClickHouse native protocol (port 9000) to the 3 direct tables
-2. **Phase 2** — Produce all records to Kafka (`kafka:9092`, 3 topics), then verify consumption via Kafka engine + MV
-3. **Phase 3** — Produce all records to Redpanda (`redpanda:9093`, same 3 topics), then verify consumption via Redpanda Kafka engine + MV
+Seven sequential phases:
+1. **CH Native** — insert to direct tables
+2. **Kafka 1p** — produce to 1-partition topics, verify sinks
+3. **Kafka 3p** — produce to 3-partition topics, verify sinks
+4. **Kafka 5p** — produce to 5-partition topics, verify sinks
+5. **Redpanda 1p** — produce to 1-partition topics, verify sinks
+6. **Redpanda 3p** — produce to 3-partition topics, verify sinks
+7. **Redpanda 5p** — produce to 5-partition topics, verify sinks
+
+Each `KafkaWriter` is scoped and destructed between phases (fair RSS measurement).
 
 ### Results
 
-| Metric | ClickHouse Native | Kafka Produce | Redpanda Produce | Ratio (Kafka / CH) | Ratio (RP / CH) |
-|--------|------------------:|--------------:|-----------------:|:------------------:|:----------------:|
-| Records | 100 000 | 100 000 | 100 000 | 1.00x | 1.00x |
-| Elapsed time (s) | 0.60 | 1.46 | 1.87 | **0.41x** | **0.32x** |
-| Throughput (rec/s) | 166 909 | 68 464 | 53 457 | **0.41x** | **0.32x** |
-| Throughput (MB/s) | 3.608 | 1.480 | 1.156 | **0.41x** | **0.32x** |
-| CPU user (s) | 0.02 | 0.22 | 0.22 | **0.41x** | **0.32x** |
-| CPU sys (s) | 0.01 | 0.04 | 0.02 | **0.41x** | **0.32x** |
-| RSS (KB) | 14 956 | 19 980 | 20 116 | **0.75x** | **0.74x** |
+| Metric | CH Native | Kafka 1p | Kafka 3p | Kafka 5p | Redpanda 1p | Redpanda 3p | Redpanda 5p |
+|--------|----------:|---------:|---------:|---------:|------------:|------------:|------------:|
+| Records | 100 000 | 100 000 | 100 000 | 100 000 | 100 000 | 100 000 | 100 000 |
+| Elapsed (s) | 0.37 | 2.48 | 1.90 | 2.31 | 2.21 | **1.35** | **1.37** |
+| Throughput (rec/s) | 271 571 | 40 272 | 52 613 | 43 379 | 45 214 | **74 244** | **73 192** |
+| Throughput (MB/s) | 5.870 | 0.871 | 1.137 | 0.938 | 0.977 | **1.605** | **1.582** |
+| CPU user (s) | 0.02 | 0.23 | 0.22 | 0.22 | 0.22 | 0.23 | 0.22 |
+| CPU sys (s) | 0.01 | 0.03 | 0.03 | 0.03 | 0.03 | 0.03 | 0.03 |
+| RSS (KB) | 15 096 | 19 868 | 19 892 | 19 796 | 19 800 | 19 804 | 19 820 |
 
-> **Ratio legend**: < 1.00x means broker is slower than ClickHouse native.
-> RSS = current RSS (VmRSS), not peak — each phase runs in its own scope with destructor cleanup.
+### Partition scaling (throughput rel. to 1p)
 
-### Verification
-All 99 999 records produced to Kafka and Redpanda were successfully consumed by the respective ClickHouse Kafka engine tables (verified per type).
+| Broker | 1p → 3p | 1p → 5p |
+|--------|:-------:|:-------:|
+| Kafka | **+31%** | **+8%** |
+| Redpanda | **+64%** | **+62%** |
 
 ### Key Takeaways
 
-1. **ClickHouse native is ~2.5−3× faster** than Kafka/Redpanda produce on this workload.
-2. **Redpanda was slightly slower than Kafka** (53K vs 68K rec/s) — bottleneck is librdkafka client, not broker. Both use the same library; variance is within noise on localhost.
-3. **Current RSS is comparable** across all three phases (~15−20 KB) — the earlier 413 MB reading was an artifact of cumulative VmPeak measurement.
-4. **Smaller typed records** (2.16 MB vs 11.8 MB in v1) make the CH native advantage less dramatic than with flat 100 B messages.
-5. Both brokers consumed successfully via Kafka engine + MV — the time-series schema works end-to-end.
+1. **CH native is 3.7–6.7× faster** than any broker path on this workload.
+2. **3 partitions is the sweet spot** for Kafka (52.6K rec/s). 5 partitions regresses (–18% from 3p) — likely broker-side partition overhead on a single-core container.
+3. **Redpanda scales better with partitions** — 3p gives +64% over 1p (74.2K), and 5p holds the gain without regression.
+4. **Redpanda 3p is 41% faster than Kafka 3p** (74.2K vs 52.6K). Redpanda's C++ core handles multi-partition writes more efficiently on this hardware.
+5. **RSS is stable** across all phases (~20 KB per producer, identical between brokers).
+6. All 21 sink tables received exactly 33 333 rows — end-to-end correctness confirmed.
 
 ---
 

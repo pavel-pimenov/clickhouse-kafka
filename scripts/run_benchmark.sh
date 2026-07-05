@@ -19,7 +19,17 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting ClickHouse, Kafka and Redpanda..."
-docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d clickhouse kafka redpanda
+docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d --wait clickhouse kafka redpanda
+
+echo ""
+echo "Creating Redpanda topics..."
+for topic_partition in signals-float-3p:3 signals-double-3p:3 signals-int-3p:3 \
+                       signals-float-5p:5 signals-double-5p:5 signals-int-5p:5; do
+    topic="${topic_partition%:*}"
+    partitions="${topic_partition#*:}"
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" exec -T redpanda \
+        rpk topic create "$topic" --partitions "$partitions" 2>&1 || true
+done
 
 echo ""
 echo "Building client image..."
