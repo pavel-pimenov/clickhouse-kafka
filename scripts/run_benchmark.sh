@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 echo "============================================"
-echo " ClickHouse vs Kafka — Benchmark Suite"
+echo " CH Native vs Kafka vs Redpanda — Benchmark"
 echo "============================================"
 echo ""
 
@@ -18,8 +18,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Starting ClickHouse and Kafka..."
-docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d clickhouse kafka
+echo "Starting ClickHouse, Kafka and Redpanda..."
+docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d clickhouse kafka redpanda
 
 echo ""
 echo "Building client image..."

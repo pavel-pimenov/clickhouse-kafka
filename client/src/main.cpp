@@ -48,8 +48,6 @@ double totalDataSizeMB(const std::vector<Record>& data) {
     return bytes / (1024.0 * 1024.0);
 }
 
-enum class Phase { Direct, Kafka };
-
 static void waitForServices(ClickHouseWriter& ch, int maxRetries) {
     std::cout << "Waiting for ClickHouse...\n";
     for (int i = 0; i < maxRetries; ++i) {
@@ -62,11 +60,29 @@ static void waitForServices(ClickHouseWriter& ch, int maxRetries) {
     throw std::runtime_error("ClickHouse not ready after " + std::to_string(maxRetries) + " retries");
 }
 
+static void verifyConsumption(ClickHouseWriter& ch, const std::string& table,
+                               const std::string& label, uint64_t expected) {
+    std::cout << "=== Verifying " << label << " -> ClickHouse consumption ===\n";
+    for (int i = 0; i < 60; ++i) {
+        auto count = ch.countTable(table);
+        if (count >= expected) {
+            std::cout << "  All " << count << " records consumed\n\n";
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (i == 59) {
+            std::cout << "  WARNING: Only " << count << "/" << expected
+                      << " consumed after 60s\n\n";
+        }
+    }
+}
+
 int main() {
     try {
-        auto kafkaBroker = getEnv("KAFKA_BROKER", "localhost:9092");
         auto chHost = getEnv("CLICKHOUSE_HOST", "localhost");
         auto chPort = std::stoi(getEnv("CLICKHOUSE_PORT", "9000"));
+        auto kafkaBroker = getEnv("KAFKA_BROKER", "localhost:9092");
+        auto redpandaBroker = getEnv("REDPANDA_BROKER", "localhost:9093");
         auto numRecords = std::stoull(getEnv("NUM_RECORDS", "100000"));
         auto batchSize = std::stoull(getEnv("BATCH_SIZE", "1000"));
         auto msgSize = std::stoull(getEnv("MESSAGE_SIZE", "100"));
@@ -76,7 +92,8 @@ int main() {
                   << "  Batch size: " << batchSize << "\n"
                   << "  Message size: " << msgSize << " B\n"
                   << "  ClickHouse: " << chHost << ":" << chPort << "\n"
-                  << "  Kafka: " << kafkaBroker << "\n\n";
+                  << "  Kafka: " << kafkaBroker << "\n"
+                  << "  Redpanda: " << redpandaBroker << "\n\n";
 
         ClickHouseWriter chWriter(chHost, chPort);
         waitForServices(chWriter, 30);
@@ -86,6 +103,8 @@ int main() {
         auto dataMB = totalDataSizeMB(data);
         std::cout << "Data size: " << std::fixed << std::setprecision(2)
                   << dataMB << " MB\n\n";
+
+        std::vector<BenchmarkResult> results;
 
         // --- Phase 1: ClickHouse native ---
         std::cout << "=== PHASE 1: ClickHouse Native Direct Write ===\n";
@@ -102,19 +121,20 @@ int main() {
                   << (numRecords / elapsed) << " rec/s, "
                   << (dataMB / elapsed) << " MB/s\n\n";
 
-        BenchmarkResult directResult;
-        directResult.name = "ClickHouse Native";
-        directResult.elapsedSeconds = elapsed;
-        directResult.numRecords = chCount;
-        directResult.throughputRecsPerSec = numRecords / elapsed;
-        directResult.throughputMbPerSec = dataMB / elapsed;
-        directResult.usage.cpuUserSec = after.cpuUserSec - before.cpuUserSec;
-        directResult.usage.cpuSysSec = after.cpuSysSec - before.cpuSysSec;
-        directResult.usage.peakRssKb = after.peakRssKb;
+        results.push_back({
+            "ClickHouse Native",
+            elapsed,
+            chCount,
+            numRecords / elapsed,
+            dataMB / elapsed,
+            {after.cpuUserSec - before.cpuUserSec,
+             after.cpuSysSec - before.cpuSysSec,
+             after.peakRssKb}
+        });
 
-        // --- Phase 2: Kafka ---
+        // --- Phase 2: Kafka Produce ---
         std::cout << "=== PHASE 2: Kafka Produce ===\n";
-        KafkaWriter kafkaWriter(kafkaBroker, "benchmark-topic");
+        KafkaWriter kafkaWriter(kafkaBroker, "benchmark");
 
         before = getResourceUsage();
         t0 = nowSec();
@@ -128,41 +148,59 @@ int main() {
                   << (numRecords / elapsed) << " rec/s, "
                   << (dataMB / elapsed) << " MB/s\n\n";
 
-        BenchmarkResult kafkaResult;
-        kafkaResult.name = "Kafka Produce";
-        kafkaResult.elapsedSeconds = elapsed;
-        kafkaResult.numRecords = numRecords;
-        kafkaResult.throughputRecsPerSec = numRecords / elapsed;
-        kafkaResult.throughputMbPerSec = dataMB / elapsed;
-        kafkaResult.usage.cpuUserSec = after.cpuUserSec - before.cpuUserSec;
-        kafkaResult.usage.cpuSysSec = after.cpuSysSec - before.cpuSysSec;
-        kafkaResult.usage.peakRssKb = after.peakRssKb;
+        results.push_back({
+            "Kafka Produce",
+            elapsed,
+            numRecords,
+            numRecords / elapsed,
+            dataMB / elapsed,
+            {after.cpuUserSec - before.cpuUserSec,
+             after.cpuSysSec - before.cpuSysSec,
+             after.peakRssKb}
+        });
 
-        // --- Verify Kafka consumption ---
-        std::cout << "=== Verifying Kafka -> ClickHouse consumption ===\n";
-        for (int i = 0; i < 60; ++i) {
-            auto kafkaCount = chWriter.countTable("kafka_sink");
-            if (kafkaCount >= numRecords) {
-                std::cout << "  All " << kafkaCount
-                          << " records consumed by ClickHouse Kafka engine\n\n";
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (i == 59) {
-                std::cout << "  WARNING: Only " << kafkaCount << "/" << numRecords
-                          << " consumed after 60s\n\n";
-            }
-        }
+        verifyConsumption(chWriter, "kafka_sink", "Kafka", numRecords);
+
+        // --- Phase 3: Redpanda Produce ---
+        std::cout << "=== PHASE 3: Redpanda Produce ===\n";
+        KafkaWriter redpandaWriter(redpandaBroker, "benchmark");
+
+        before = getResourceUsage();
+        t0 = nowSec();
+        redpandaWriter.produce(data, batchSize);
+        t1 = nowSec();
+        after = getResourceUsage();
+        elapsed = t1 - t0;
+        std::cout << "  Produced " << numRecords << " records to Redpanda\n"
+                  << "  Time: " << std::fixed << std::setprecision(2) << elapsed << " s\n"
+                  << "  Throughput: " << std::fixed << std::setprecision(1)
+                  << (numRecords / elapsed) << " rec/s, "
+                  << (dataMB / elapsed) << " MB/s\n\n";
+
+        results.push_back({
+            "Redpanda Produce",
+            elapsed,
+            numRecords,
+            numRecords / elapsed,
+            dataMB / elapsed,
+            {after.cpuUserSec - before.cpuUserSec,
+             after.cpuSysSec - before.cpuSysSec,
+             after.peakRssKb}
+        });
+
+        verifyConsumption(chWriter, "redpanda_sink", "Redpanda", numRecords);
 
         // --- Print comparison ---
-        printResults(directResult, kafkaResult);
+        printResults(results);
 
         // --- Disk info ---
         std::cout << "\n=== ClickHouse table sizes ===\n";
         auto chDirectBytes = chWriter.countTable("direct");
         auto chKafkaBytes = chWriter.countTable("kafka_sink");
-        std::cout << "  benchmark.direct:   " << chDirectBytes << " rows\n";
-        std::cout << "  benchmark.kafka_sink: " << chKafkaBytes << " rows\n";
+        auto chRedpandaBytes = chWriter.countTable("redpanda_sink");
+        std::cout << "  benchmark.direct:        " << chDirectBytes << " rows\n";
+        std::cout << "  benchmark.kafka_sink:    " << chKafkaBytes << " rows\n";
+        std::cout << "  benchmark.redpanda_sink: " << chRedpandaBytes << " rows\n";
 
     } catch (const std::exception& e) {
         std::cerr << "FATAL: " << e.what() << "\n";

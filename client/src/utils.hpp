@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct ResourceUsage {
     double cpuUserSec = 0.0;
@@ -20,5 +21,5 @@ struct BenchmarkResult {
 
 double nowSec();
 ResourceUsage getResourceUsage();
-void printResults(const BenchmarkResult& direct, const BenchmarkResult& kafka);
+void printResults(const std::vector<BenchmarkResult>& results);
 std::string getEnv(const std::string& key, const std::string& defaultVal);
