@@ -8,6 +8,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <functional>
 
 static void waitForServices(ClickHouseWriter& ch, int maxRetries) {
     std::cout << "Waiting for ClickHouse...\n";

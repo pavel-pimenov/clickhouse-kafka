@@ -4,6 +4,7 @@ services:
     ports:
       - "9092:9092"
     environment:
+      CLUSTER_ID: "qBrgiFMvS06OIeOXdqfkkQ"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
@@ -16,9 +17,9 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
       test: nc -z localhost 9092 || exit 1
-      interval: 5s
-      timeout: 3s
-      retries: 15
+      interval: 10s
+      timeout: 5s
+      retries: 30
 
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.7

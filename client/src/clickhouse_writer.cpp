@@ -16,9 +16,9 @@ public:
     {}
 
     void insert(const TestData& data, size_t batchSize) {
-        insertTyped(data.floats,   batchSize, "signals_float",   &Impl::appendFloat);
-        insertTyped(data.doubles,  batchSize, "signals_double",  &Impl::appendDouble);
-        insertTyped(data.ints,     batchSize, "signals_int",     &Impl::appendInt);
+        insertFloat(data.floats, batchSize);
+        insertDouble(data.doubles, batchSize);
+        insertInt(data.ints, batchSize);
     }
 
     bool ping() {
@@ -48,45 +48,59 @@ private:
     clickhouse::Client client_;
 
     template<typename Rec, typename Col>
-    void insertTyped(const std::vector<Rec>& records, size_t batchSize,
-                     const std::string& table,
-                     void (Impl::*append)(clickhouse::Block&, const Rec&))
+    void insertBatch(const std::vector<Rec>& records, size_t i, size_t end,
+                     const std::string& table)
     {
-        size_t i = 0;
-        while (i < records.size()) {
-            size_t end = std::min(i + batchSize, records.size());
+        clickhouse::Block block;
+        auto colId = std::make_shared<clickhouse::ColumnUInt64>();
+        auto colTs = std::make_shared<clickhouse::ColumnDateTime>();
+        auto colVal = std::make_shared<Col>();
 
-            clickhouse::Block block;
-            block.AppendColumn("signal_id", std::make_shared<clickhouse::ColumnUInt64>());
-            block.AppendColumn("time", std::make_shared<clickhouse::ColumnDateTime>());
-            block.AppendColumn("value", std::make_shared<Col>());
+        for (size_t j = i; j < end; ++j) {
+            colId->Append(records[j].signalId);
+            colTs->Append(static_cast<time_t>(records[j].time));
+        }
 
-            for (size_t j = i; j < end; ++j) {
-                block[0]->As<clickhouse::ColumnUInt64>()->Append(records[j].signalId);
-                block[1]->As<clickhouse::ColumnDateTime>()->Append(static_cast<time_t>(records[j].time));
-            }
+        block.AppendColumn("signal_id", colId);
+        block.AppendColumn("time", colTs);
 
-            // Fill value column using the type-specific appender
-            auto* valueCol = block[2].get();
-            for (size_t j = i; j < end; ++j) {
-                appendValue(valueCol, records[j]);
-            }
+        // Fill value in a second pass so block owns the column pointer
+        for (size_t j = i; j < end; ++j)
+            appendValue(colVal.get(), records[j]);
+        block.AppendColumn("value", colVal);
 
-            client_.Insert("benchmark." + table, block);
-            i = end;
+        client_.Insert("benchmark." + table, block);
+    }
+
+    void appendValue(clickhouse::ColumnFloat32* col, const FloatRecord& r) {
+        col->Append(r.value);
+    }
+    void appendValue(clickhouse::ColumnFloat64* col, const DoubleRecord& r) {
+        col->Append(r.value);
+    }
+    void appendValue(clickhouse::ColumnInt64* col, const IntRecord& r) {
+        col->Append(r.value);
+    }
+
+    void insertFloat(const std::vector<FloatRecord>& records, size_t batchSize) {
+        for (size_t i = 0; i < records.size(); i += batchSize) {
+            auto end = std::min(i + batchSize, records.size());
+            insertBatch<FloatRecord, clickhouse::ColumnFloat32>(records, i, end, "signals_float");
         }
     }
 
-    void appendValue(clickhouse::Column* col, const FloatRecord& r) {
-        col->As<clickhouse::ColumnFloat32>()->Append(r.value);
+    void insertDouble(const std::vector<DoubleRecord>& records, size_t batchSize) {
+        for (size_t i = 0; i < records.size(); i += batchSize) {
+            auto end = std::min(i + batchSize, records.size());
+            insertBatch<DoubleRecord, clickhouse::ColumnFloat64>(records, i, end, "signals_double");
+        }
     }
 
-    void appendValue(clickhouse::Column* col, const DoubleRecord& r) {
-        col->As<clickhouse::ColumnFloat64>()->Append(r.value);
-    }
-
-    void appendValue(clickhouse::Column* col, const IntRecord& r) {
-        col->As<clickhouse::ColumnInt64>()->Append(r.value);
+    void insertInt(const std::vector<IntRecord>& records, size_t batchSize) {
+        for (size_t i = 0; i < records.size(); i += batchSize) {
+            auto end = std::min(i + batchSize, records.size());
+            insertBatch<IntRecord, clickhouse::ColumnInt64>(records, i, end, "signals_int");
+        }
     }
 };
 
