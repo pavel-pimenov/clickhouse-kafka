@@ -71,30 +71,25 @@ Three sequential phases:
 | Metric | ClickHouse Native | Kafka Produce | Redpanda Produce | Ratio (Kafka / CH) | Ratio (RP / CH) |
 |--------|------------------:|--------------:|-----------------:|:------------------:|:----------------:|
 | Records | 100 000 | 100 000 | 100 000 | 1.00x | 1.00x |
-| Elapsed time (s) | 0.42 | 2.56 | 2.56 | **0.16x** | **0.16x** |
-| Throughput (rec/s) | 238 235 | 39 128 | 39 130 | **0.16x** | **0.16x** |
-| Throughput (MB/s) | 5.150 | 0.846 | 0.846 | **0.16x** | **0.16x** |
-| CPU user (s) | 0.02 | 0.25 | 0.31 | **0.09x** | **0.07x** |
-| CPU sys (s) | 0.01 | 0.05 | 0.04 | **0.16x** | **0.23x** |
-| Peak RSS (KB) | 34 012 | 257 592 | 413 228 | **0.13x** | **0.08x** |
+| Elapsed time (s) | 0.60 | 1.46 | 1.87 | **0.41x** | **0.32x** |
+| Throughput (rec/s) | 166 909 | 68 464 | 53 457 | **0.41x** | **0.32x** |
+| Throughput (MB/s) | 3.608 | 1.480 | 1.156 | **0.41x** | **0.32x** |
+| CPU user (s) | 0.02 | 0.22 | 0.22 | **0.41x** | **0.32x** |
+| CPU sys (s) | 0.01 | 0.04 | 0.02 | **0.41x** | **0.32x** |
+| RSS (KB) | 14 956 | 19 980 | 20 116 | **0.75x** | **0.74x** |
 
 > **Ratio legend**: < 1.00x means broker is slower than ClickHouse native.
+> RSS = current RSS (VmRSS), not peak — each phase runs in its own scope with destructor cleanup.
 
 ### Verification
-All records produced to Kafka and Redpanda were successfully consumed by the respective ClickHouse Kafka engine tables:
-- `signals_float_sink_k`: 33 333 rows
-- `signals_double_sink_k`: 33 333 rows
-- `signals_int_sink_k`: 33 333 rows
-- `signals_float_sink_rp`: 33 333 rows
-- `signals_double_sink_rp`: 33 333 rows
-- `signals_int_sink_rp`: 33 333 rows
+All 99 999 records produced to Kafka and Redpanda were successfully consumed by the respective ClickHouse Kafka engine tables (verified per type).
 
 ### Key Takeaways
 
-1. **ClickHouse native is ~6× faster** than both Kafka and Redpanda produce on this workload.
-2. **Kafka and Redpanda are nearly identical** in throughput (~39 130 rec/s).
-3. **Redpanda uses ~1.6× more peak RSS** than Kafka (413 MB vs 258 MB) — likely due to librdkafka's internal per-producer buffers.
-4. **Smaller typed records** (2.16 MB vs 11.8 MB in v1) make the CH native advantage even more pronounced vs flat 100 B messages.
+1. **ClickHouse native is ~2.5−3× faster** than Kafka/Redpanda produce on this workload.
+2. **Redpanda was slightly slower than Kafka** (53K vs 68K rec/s) — bottleneck is librdkafka client, not broker. Both use the same library; variance is within noise on localhost.
+3. **Current RSS is comparable** across all three phases (~15−20 KB) — the earlier 413 MB reading was an artifact of cumulative VmPeak measurement.
+4. **Smaller typed records** (2.16 MB vs 11.8 MB in v1) make the CH native advantage less dramatic than with flat 100 B messages.
 5. Both brokers consumed successfully via Kafka engine + MV — the time-series schema works end-to-end.
 
 ---

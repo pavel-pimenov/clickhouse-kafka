@@ -26,12 +26,12 @@ ResourceUsage getResourceUsage() {
     std::ifstream status("/proc/self/status");
     std::string line;
     while (std::getline(status, line)) {
-        if (line.find("VmPeak:") == 0) {
+        if (line.find("VmRSS:") == 0) {
             std::string val;
             for (char c : line) {
                 if (std::isdigit(c)) val += c;
             }
-            if (!val.empty()) usage.peakRssKb = std::stoull(val);
+            if (!val.empty()) usage.currentRssKb = std::stoull(val);
             break;
         }
     }
@@ -96,8 +96,8 @@ void printResults(const std::vector<BenchmarkResult>& results) {
     printRow("CPU sys (s)", [&](const BenchmarkResult& r) {
         std::ostringstream os; os << std::fixed << std::setprecision(2) << r.usage.cpuSysSec; return os.str();
     });
-    printRow("Peak RSS (KB)", [&](const BenchmarkResult& r) {
-        return std::to_string(r.usage.peakRssKb);
+    printRow("RSS (KB)", [&](const BenchmarkResult& r) {
+        return std::to_string(r.usage.currentRssKb);
     });
 
     std::cout << "\n" << std::string(totalW, '=') << "\n";

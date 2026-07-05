@@ -66,7 +66,7 @@ static void runPhase(const std::string& phaseLabel,
         dataMB / elapsed,
         {after.cpuUserSec - before.cpuUserSec,
          after.cpuSysSec - before.cpuSysSec,
-         after.peakRssKb}
+         after.currentRssKb}
     });
 }
 
@@ -108,6 +108,7 @@ int main() {
                  "Inserted", totalRec, dataMB, results);
 
         // --- Phase 2: Kafka Produce ---
+        {
         KafkaWriter kafkaWriter(kafkaBroker);
         runPhase("PHASE 2: Kafka Produce",
                  [&]() {
@@ -116,7 +117,7 @@ int main() {
                      kafkaWriter.produceInt(data.ints, batchSize, "signals-int");
                  },
                  "Produced", totalRec, dataMB, results);
-
+        }
         std::cout << "=== Verifying Kafka -> ClickHouse consumption ===\n";
         uint64_t kFloat = verifyConsumption(chWriter, "signals_float_sink_k", "Kafka/float", data.floats.size());
         uint64_t kDouble = verifyConsumption(chWriter, "signals_double_sink_k", "Kafka/double", data.doubles.size());
@@ -124,6 +125,7 @@ int main() {
         std::cout << "  Total consumed from Kafka: " << (kFloat + kDouble + kInt) << "\n\n";
 
         // --- Phase 3: Redpanda Produce ---
+        {
         KafkaWriter redpandaWriter(redpandaBroker);
         runPhase("PHASE 3: Redpanda Produce",
                  [&]() {
@@ -132,7 +134,7 @@ int main() {
                      redpandaWriter.produceInt(data.ints, batchSize, "signals-int");
                  },
                  "Produced", totalRec, dataMB, results);
-
+        }
         std::cout << "=== Verifying Redpanda -> ClickHouse consumption ===\n";
         uint64_t rFloat = verifyConsumption(chWriter, "signals_float_sink_rp", "Redpanda/float", data.floats.size());
         uint64_t rDouble = verifyConsumption(chWriter, "signals_double_sink_rp", "Redpanda/double", data.doubles.size());

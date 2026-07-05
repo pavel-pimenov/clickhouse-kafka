@@ -7,7 +7,7 @@
 struct ResourceUsage {
     double cpuUserSec = 0.0;
     double cpuSysSec = 0.0;
-    uint64_t peakRssKb = 0;
+    uint64_t currentRssKb = 0;
 };
 
 struct BenchmarkResult {
