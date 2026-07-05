@@ -29,6 +29,9 @@ services:
     command:
       - redpanda
       - start
+      - --overprovisioned
+      - --memory
+      - 2G
       - --kafka-addr
       - PLAINTEXT://0.0.0.0:9093
       - --advertise-kafka-addr
@@ -41,8 +44,6 @@ services:
       - 0.0.0.0:33145
       - --advertise-rpc-addr
       - redpanda:33145
-      - --mode
-      - dev-container
     healthcheck:
       test: curl -f http://localhost:9644/v1/status/ready || exit 1
       interval: 5s
