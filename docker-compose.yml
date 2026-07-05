@@ -1,6 +1,6 @@
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.6.3
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -11,7 +11,7 @@ services:
       retries: 15
 
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.6.3
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -31,10 +31,12 @@ services:
       retries: 15
 
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:24.3
     ports:
       - "8123:8123"
       - "9000:9000"
+    environment:
+      CLICKHOUSE_PASSWORD: benchmark
     volumes:
       - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - clickhouse-data:/var/lib/clickhouse

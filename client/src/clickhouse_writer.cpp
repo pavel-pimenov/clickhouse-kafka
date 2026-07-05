@@ -10,6 +10,7 @@ public:
               .SetHost(host)
               .SetPort(port)
               .SetUser("default")
+              .SetPassword("benchmark")
               .SetDefaultDatabase("benchmark"))
     {}
 
