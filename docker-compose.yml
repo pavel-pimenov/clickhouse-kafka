@@ -32,9 +32,9 @@ services:
       - --advertise-kafka-addr
       - PLAINTEXT://redpanda:9093
       - --pandaproxy-addr
-      - 0.0.0.0:8082
+      - PLAINTEXT://0.0.0.0:8082
       - --advertise-pandaproxy-addr
-      - 0.0.0.0:8082
+      - PLAINTEXT://redpanda:8082
       - --rpc-addr
       - 0.0.0.0:33145
       - --advertise-rpc-addr

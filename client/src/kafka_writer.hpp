@@ -7,10 +7,12 @@
 
 class KafkaWriter {
 public:
-    KafkaWriter(const std::string& brokers, const std::string& topic);
+    KafkaWriter(const std::string& brokers);
     ~KafkaWriter();
 
-    void produce(const std::vector<Record>& records, size_t batchSize);
+    void produceFloat(const std::vector<FloatRecord>& records, size_t batchSize, const std::string& topic);
+    void produceDouble(const std::vector<DoubleRecord>& records, size_t batchSize, const std::string& topic);
+    void produceInt(const std::vector<IntRecord>& records, size_t batchSize, const std::string& topic);
 
 private:
     class Impl;

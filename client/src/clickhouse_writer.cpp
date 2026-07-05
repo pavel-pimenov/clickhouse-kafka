@@ -1,5 +1,6 @@
 #include "clickhouse_writer.hpp"
 #include <clickhouse/client.h>
+#include <clickhouse/columns/string.h>
 #include <stdexcept>
 #include <iostream>
 
@@ -14,33 +15,10 @@ public:
               .SetDefaultDatabase("benchmark"))
     {}
 
-    void insert(const std::vector<Record>& records, size_t batchSize) {
-        size_t i = 0;
-        while (i < records.size()) {
-            size_t end = std::min(i + batchSize, records.size());
-
-            clickhouse::Block block;
-            auto colId = std::make_shared<clickhouse::ColumnUInt64>();
-            auto colTs = std::make_shared<clickhouse::ColumnDateTime>();
-            auto colVal = std::make_shared<clickhouse::ColumnFloat64>();
-            auto colMsg = std::make_shared<clickhouse::ColumnString>();
-
-            for (size_t j = i; j < end; ++j) {
-                const auto& r = records[j];
-                colId->Append(r.id);
-                colTs->Append(static_cast<time_t>(r.timestamp));
-                colVal->Append(r.value);
-                colMsg->Append(r.message);
-            }
-
-            block.AppendColumn("id", colId);
-            block.AppendColumn("timestamp", colTs);
-            block.AppendColumn("value", colVal);
-            block.AppendColumn("message", colMsg);
-
-            client_.Insert("benchmark.direct", block);
-            i = end;
-        }
+    void insert(const TestData& data, size_t batchSize) {
+        insertTyped(data.floats,   batchSize, "signals_float",   &Impl::appendFloat);
+        insertTyped(data.doubles,  batchSize, "signals_double",  &Impl::appendDouble);
+        insertTyped(data.ints,     batchSize, "signals_int",     &Impl::appendInt);
     }
 
     bool ping() {
@@ -68,6 +46,48 @@ public:
 
 private:
     clickhouse::Client client_;
+
+    template<typename Rec, typename Col>
+    void insertTyped(const std::vector<Rec>& records, size_t batchSize,
+                     const std::string& table,
+                     void (Impl::*append)(clickhouse::Block&, const Rec&))
+    {
+        size_t i = 0;
+        while (i < records.size()) {
+            size_t end = std::min(i + batchSize, records.size());
+
+            clickhouse::Block block;
+            block.AppendColumn("signal_id", std::make_shared<clickhouse::ColumnUInt64>());
+            block.AppendColumn("time", std::make_shared<clickhouse::ColumnDateTime>());
+            block.AppendColumn("value", std::make_shared<Col>());
+
+            for (size_t j = i; j < end; ++j) {
+                block[0]->As<clickhouse::ColumnUInt64>()->Append(records[j].signalId);
+                block[1]->As<clickhouse::ColumnDateTime>()->Append(static_cast<time_t>(records[j].time));
+            }
+
+            // Fill value column using the type-specific appender
+            auto* valueCol = block[2].get();
+            for (size_t j = i; j < end; ++j) {
+                appendValue(valueCol, records[j]);
+            }
+
+            client_.Insert("benchmark." + table, block);
+            i = end;
+        }
+    }
+
+    void appendValue(clickhouse::Column* col, const FloatRecord& r) {
+        col->As<clickhouse::ColumnFloat32>()->Append(r.value);
+    }
+
+    void appendValue(clickhouse::Column* col, const DoubleRecord& r) {
+        col->As<clickhouse::ColumnFloat64>()->Append(r.value);
+    }
+
+    void appendValue(clickhouse::Column* col, const IntRecord& r) {
+        col->As<clickhouse::ColumnInt64>()->Append(r.value);
+    }
 };
 
 ClickHouseWriter::ClickHouseWriter(const std::string& host, int port)
@@ -75,8 +95,8 @@ ClickHouseWriter::ClickHouseWriter(const std::string& host, int port)
 
 ClickHouseWriter::~ClickHouseWriter() = default;
 
-void ClickHouseWriter::insert(const std::vector<Record>& records, size_t batchSize) {
-    impl_->insert(records, batchSize);
+void ClickHouseWriter::insert(const TestData& data, size_t batchSize) {
+    impl_->insert(data, batchSize);
 }
 
 bool ClickHouseWriter::ping() {

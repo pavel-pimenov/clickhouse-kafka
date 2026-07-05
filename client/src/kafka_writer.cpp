@@ -3,20 +3,35 @@
 #include <sstream>
 #include <stdexcept>
 #include <iostream>
+#include <iomanip>
 
-static std::string recordToJson(const Record& r) {
+static std::string floatToJson(const FloatRecord& r) {
     std::ostringstream os;
-    os << "{\"id\":" << r.id
-       << ",\"timestamp\":" << r.timestamp
-       << ",\"value\":" << r.value
-       << ",\"message\":\"" << r.message << "\"}";
+    os << "{\"signal_id\":" << r.signalId
+       << ",\"time\":" << r.time
+       << ",\"value\":" << std::setprecision(8) << r.value << "}";
+    return os.str();
+}
+
+static std::string doubleToJson(const DoubleRecord& r) {
+    std::ostringstream os;
+    os << "{\"signal_id\":" << r.signalId
+       << ",\"time\":" << r.time
+       << ",\"value\":" << std::setprecision(16) << r.value << "}";
+    return os.str();
+}
+
+static std::string intToJson(const IntRecord& r) {
+    std::ostringstream os;
+    os << "{\"signal_id\":" << r.signalId
+       << ",\"time\":" << r.time
+       << ",\"value\":" << r.value << "}";
     return os.str();
 }
 
 class KafkaWriter::Impl {
 public:
-    Impl(const std::string& brokers, const std::string& topic)
-        : topic_(topic)
+    Impl(const std::string& brokers)
     {
         std::string errstr;
 
@@ -53,7 +68,9 @@ public:
         }
     }
 
-    void produce(const std::vector<Record>& records, size_t batchSize) {
+    template<typename Rec, typename ToJson>
+    void produce(const std::vector<Rec>& records, size_t batchSize,
+                 const std::string& topic, ToJson toJson) {
         size_t i = 0;
         while (i < records.size()) {
             size_t end = std::min(i + batchSize, records.size());
@@ -61,11 +78,11 @@ public:
             std::string batch;
             for (size_t j = i; j < end; ++j) {
                 if (j > i) batch += '\n';
-                batch += recordToJson(records[j]);
+                batch += toJson(records[j]);
             }
 
             RdKafka::ErrorCode err = producer_->produce(
-                topic_,
+                topic,
                 RdKafka::Topic::PARTITION_UA,
                 RdKafka::Producer::RK_MSG_COPY,
                 const_cast<char*>(batch.data()),
@@ -76,7 +93,7 @@ public:
             if (err != RdKafka::ERR_NO_ERROR) {
                 producer_->poll(100);
                 err = producer_->produce(
-                    topic_,
+                    topic,
                     RdKafka::Topic::PARTITION_UA,
                     RdKafka::Producer::RK_MSG_COPY,
                     const_cast<char*>(batch.data()),
@@ -95,15 +112,22 @@ public:
     }
 
 private:
-    std::string topic_;
     std::unique_ptr<RdKafka::Producer> producer_;
 };
 
-KafkaWriter::KafkaWriter(const std::string& brokers, const std::string& topic)
-    : impl_(std::make_unique<Impl>(brokers, topic)) {}
+KafkaWriter::KafkaWriter(const std::string& brokers)
+    : impl_(std::make_unique<Impl>(brokers)) {}
 
 KafkaWriter::~KafkaWriter() = default;
 
-void KafkaWriter::produce(const std::vector<Record>& records, size_t batchSize) {
-    impl_->produce(records, batchSize);
+void KafkaWriter::produceFloat(const std::vector<FloatRecord>& records, size_t batchSize, const std::string& topic) {
+    impl_->produce(records, batchSize, topic, floatToJson);
+}
+
+void KafkaWriter::produceDouble(const std::vector<DoubleRecord>& records, size_t batchSize, const std::string& topic) {
+    impl_->produce(records, batchSize, topic, doubleToJson);
+}
+
+void KafkaWriter::produceInt(const std::vector<IntRecord>& records, size_t batchSize, const std::string& topic) {
+    impl_->produce(records, batchSize, topic, intToJson);
 }

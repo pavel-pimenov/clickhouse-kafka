@@ -21,6 +21,7 @@ pkg_check_modules(RDKAFKA REQUIRED rdkafka rdkafka++)
 
 add_executable(benchmark_client
     src/main.cpp
+    src/record.cpp
     src/clickhouse_writer.cpp
     src/kafka_writer.cpp
     src/utils.cpp
