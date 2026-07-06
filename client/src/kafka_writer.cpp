@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cstring>
+#include <chrono>
 
 static std::string floatToJson(const FloatRecord& r) {
     std::ostringstream os;
@@ -30,36 +31,63 @@ static std::string intToJson(const IntRecord& r) {
     return os.str();
 }
 
+class DeliveryCb : public RdKafka::DeliveryReportCb {
+public:
+    explicit DeliveryCb(std::shared_ptr<LatencyTracker> tracker)
+        : tracker_(std::move(tracker)) {}
+
+    void dr_cb(RdKafka::Message& message) override {
+        if (message.err() != RdKafka::ERR_NO_ERROR) return;
+        if (!message.msg_opaque()) return;
+        auto* ts = static_cast<uint64_t*>(message.msg_opaque());
+        auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        double latMs = static_cast<double>(now - *ts) / 1000.0;
+        delete ts;
+        if (tracker_) {
+            try {
+                tracker_->add(latMs);
+            } catch (...) {}
+        }
+    }
+
+private:
+    std::shared_ptr<LatencyTracker> tracker_;
+};
+
 class KafkaWriter::Impl {
 public:
-    Impl(const KafkaWriterConfig& config)
+    Impl(const KafkaWriterConfig& config, std::shared_ptr<LatencyTracker> tracker)
         : asyncFlush_(config.asyncFlush)
+        , deliveryCb_(tracker)
+        , trackLatency_(tracker != nullptr)
     {
         std::string errstr;
 
-        RdKafka::Conf *conf = RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL);
-        if (!conf)
+        conf_.reset(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL));
+        if (!conf_)
             throw std::runtime_error("failed to create kafka config");
 
-        auto conf_cleanup = [](RdKafka::Conf* c) { delete c; };
-
-        if (conf->set("bootstrap.servers", config.brokers, errstr) != RdKafka::Conf::CONF_OK)
+        if (conf_->set("bootstrap.servers", config.brokers, errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        if (conf->set("message.timeout.ms", "30000", errstr) != RdKafka::Conf::CONF_OK)
+        if (conf_->set("message.timeout.ms", "30000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        if (conf->set("queue.buffering.max.messages", "100000", errstr) != RdKafka::Conf::CONF_OK)
+        if (conf_->set("queue.buffering.max.messages", "100000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
-        if (conf->set("batch.num.messages", "10000", errstr) != RdKafka::Conf::CONF_OK)
+        if (conf_->set("batch.num.messages", "10000", errstr) != RdKafka::Conf::CONF_OK)
             throw std::runtime_error("kafka conf error: " + errstr);
 
-        if (!config.compression.empty()) {
-            if (conf->set("compression.codec", config.compression, errstr) != RdKafka::Conf::CONF_OK)
+        if (trackLatency_) {
+            if (conf_->set("dr_cb", &deliveryCb_, errstr) != RdKafka::Conf::CONF_OK)
                 throw std::runtime_error("kafka conf error: " + errstr);
         }
 
-        producer_.reset(RdKafka::Producer::create(conf, errstr));
-        delete conf;
+        if (!config.compression.empty()) {
+            if (conf_->set("compression.codec", config.compression, errstr) != RdKafka::Conf::CONF_OK)
+                throw std::runtime_error("kafka conf error: " + errstr);
+        }
 
+        producer_.reset(RdKafka::Producer::create(conf_.get(), errstr));
         if (!producer_) {
             throw std::runtime_error("failed to create kafka producer: " + errstr);
         }
@@ -89,15 +117,24 @@ public:
             if (!buf) throw std::bad_alloc();
             std::memcpy(buf, batch.data(), batch.size());
 
+            void* opaque = nullptr;
+            if (trackLatency_) {
+                auto* ts = new uint64_t(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+                opaque = ts;
+            }
+
             RdKafka::ErrorCode err = producer_->produce(
                 topic,
                 RdKafka::Topic::PARTITION_UA,
                 RdKafka::Producer::RK_MSG_FREE,
                 buf, batch.size(),
                 nullptr, 0,
-                0, nullptr, nullptr);
+                0, nullptr, opaque);
 
             if (err != RdKafka::ERR_NO_ERROR) {
+                if (opaque) delete static_cast<uint64_t*>(opaque);
                 std::free(buf);
                 producer_->poll(100);
                 char* buf2 = static_cast<char*>(std::malloc(batch.size()));
@@ -134,12 +171,17 @@ public:
     }
 
 private:
+    std::unique_ptr<RdKafka::Conf> conf_;
+    DeliveryCb deliveryCb_;
     std::unique_ptr<RdKafka::Producer> producer_;
     bool asyncFlush_;
+    bool trackLatency_ = false;
 };
 
 KafkaWriter::KafkaWriter(const KafkaWriterConfig& config)
-    : impl_(std::make_unique<Impl>(config)) {}
+    : latencyTracker_(config.trackLatency ? std::make_shared<LatencyTracker>() : nullptr)
+    , impl_(std::make_unique<Impl>(config, latencyTracker_))
+{}
 
 KafkaWriter::~KafkaWriter() = default;
 

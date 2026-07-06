@@ -84,6 +84,9 @@ services:
       REDPANDA_BROKER: redpanda:9093
       NUM_RECORDS: "100000"
       BATCH_SIZE: "1000"
+      PARTITIONS: "3"
+      TRACK_LATENCY: "1"
+      ITERATIONS: "1"
 
 volumes:
   clickhouse-data:

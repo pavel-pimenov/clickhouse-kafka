@@ -31,13 +31,26 @@ for topic_partition in signals-float-3p:3 signals-double-3p:3 signals-int-3p:3 \
         rpk topic create "$topic" --partitions "$partitions" 2>&1 || true
 done
 
+# Overridable env vars
+PARTITIONS="${PARTITIONS:-3}"
+BATCH_SIZE="${BATCH_SIZE:-1000}"
+NUM_RECORDS="${NUM_RECORDS:-100000}"
+ITERATIONS="${ITERATIONS:-1}"
+TRACK_LATENCY="${TRACK_LATENCY:-1}"
+
 echo ""
 echo "Building client image..."
 docker compose -f "$PROJECT_DIR/docker-compose.yml" build client
 
 echo ""
-echo "Running benchmark client..."
-docker compose -f "$PROJECT_DIR/docker-compose.yml" run --rm client
+echo "Running benchmark client (partitions=$PARTITIONS, batch=$BATCH_SIZE, records=$NUM_RECORDS, iters=$ITERATIONS)..."
+docker compose -f "$PROJECT_DIR/docker-compose.yml" run --rm \
+  -e PARTITIONS="$PARTITIONS" \
+  -e BATCH_SIZE="$BATCH_SIZE" \
+  -e NUM_RECORDS="$NUM_RECORDS" \
+  -e ITERATIONS="$ITERATIONS" \
+  -e TRACK_LATENCY="$TRACK_LATENCY" \
+  client
 
 echo ""
 echo "Benchmark finished."
